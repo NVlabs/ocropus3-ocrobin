@@ -1,0 +1,217 @@
+#!/usr/bin/python
+import os
+import re
+import glob
+import random as pyr
+import os.path
+import argparse
+
+import torch
+import scipy.ndimage as ndi
+import torch.nn.functional as F
+from pylab import *
+from torch import nn, optim, autograd
+from dlinputs import utils
+from dlinputs import gopen
+from dlinputs import filters
+from dlinputs import paths
+from dltrainers import helpers
+from dltrainers import layers
+from torch.autograd import Variable
+import matplotlib as mpl
+
+from ocroseg import degrade
+
+rc("image", cmap="gray")
+ion()
+
+parser = argparse.ArgumentParser("train a page segmenter")
+parser.add_argument("-l", "--lr", default="0.1", help="learning rate or learning rate sequence 'n,lr:n,lr:n,:r'")
+parser.add_argument("-b", "--batchsize", type=int, default=1)
+parser.add_argument("-o", "--output", default="temp", help="prefix for output")
+parser.add_argument("-m", "--model", default=None, help="load model")
+
+parser.add_argument("--save_every", default=1000, type=int, help="how often to save")
+parser.add_argument("--loss_horizon", default=1000, type=int, help="horizon over which to calculate the loss")
+parser.add_argument("--ntrain", type=int, default=-1, help="ntrain starting value")
+parser.add_argument("--random_invert", type=float, default=0.0)
+parser.add_argument("--min_range", type=float, default=0.4)
+
+parser.add_argument("-D", "--makesource", default=None)
+parser.add_argument("-P", "--makepipeline", default=None)
+parser.add_argument("-M", "--makemodel", default=None)
+parser.add_argument("--exec", dest="execute", nargs="*", default=[])
+
+args = parser.parse_args()
+ARGS = {k: v for k, v in args.__dict__.items()}
+
+
+def make_source():
+    return  gopen.open_source("/home/tmb/lpr-ocr/binsim/uw3-binsim-@008.tgz")
+
+
+def make_pipeline():
+
+    def transformer(sample):
+        gray = sample["gray.png"]
+        assert gray.ndim==2
+        assert amin(gray) >= 0.0
+        assert amax(gray) <= 1.0
+        binary = sample["bin.png"]
+        assert binary.ndim==2
+        if args.min_range < 1.0:
+            gray -= amin(gray)
+            gray /= amax(gray)
+            r = rand()  * (1.0 - args.min_range) + args.min_range
+            gray *= r
+            gray += rand() * (1.0-amax(gray))
+        if args.random_invert > 0.0:
+            if rand() < args.random_invert:
+                gray = 1.0-gray
+        gray = np.expand_dims(gray, 2)
+        binary = np.expand_dims(binary, 2)
+        sample["gray.png"] = gray
+        sample["bin.png"] = binary
+        return sample
+
+    return filters.compose(
+        filters.shuffle(100, 10),
+        filters.transform(transformer),
+        filters.rename(input="gray.png", output="bin.png"),
+        filters.batched(args.batchsize))
+
+def make_model():
+    r = 3
+    model = nn.Sequential(
+        nn.Conv2d(1, 8, r, padding=r//2),
+        nn.BatchNorm2d(8),
+        nn.ReLU(),
+        layers.LSTM2(8, 4),
+        nn.Conv2d(8, 1, 1),
+        nn.Sigmoid()
+    )
+    return model
+
+if args.makepipeline: execfile(args.makepipeline)
+if args.makesource: execfile(args.makesource)
+if args.makemodel: execfile(args.makemodel)
+for e in args.execute: exec args.execute
+
+def pixels_to_batch(x):
+    b, d, h, w = x.size()
+    return x.permute(0, 2, 3, 1).contiguous().view(b*h*w, d)
+
+class PixelsToBatch(nn.Module):
+    def forward(self, x):
+        return pixels_to_batch(x)
+
+class LearningRateSchedule(object):
+    def __init__(self, schedule):
+        if ":" in schedule:
+            self.learning_rates = [[float(y) for y in x.split(",")] for x in schedule.split(":")]
+            assert self.learning_rates[0][0] == 0
+        else:
+            lr0 = float(schedule)
+            self.learning_rates = [[0, lr0]]
+    def __call__(self, count):
+        _, lr = self.learning_rates[0]
+        for n, l in self.learning_rates:
+            if count < n: break
+            lr = l
+        return lr
+
+source = make_source()
+sample = source.next()
+utils.print_sample(sample)
+pipeline = make_pipeline()
+source = pipeline(source)
+sample = source.next()
+utils.print_sample(sample)
+
+if args.model:
+    model = torch.load(args.model)
+    ntrain, _ = paths.parse_save_path(args.model)
+else:
+    model = make_model()
+    ntrain = 0
+model.cuda()
+if args.ntrain >= 0: ntrain = args.ntrain
+print "ntrain", ntrain
+print model
+
+start_count = 0
+
+criterion = nn.MSELoss()
+criterion.cuda()
+
+losses = [1.0]
+
+def zoom_like(image, shape):
+    h, w = shape
+    image = helpers.asnd(image)
+    ih, iw = image.shape
+    scale = diag([ih * 1.0/h, iw * 1.0/w])
+    return ndi.affine_transform(image, scale, output_shape=(h, w), order=1)
+
+def zoom_like_batch(batch, shape):
+    b, h, w, d = batch.shape
+    oh, ow = shape
+    batch_result = []
+    for i in range(b):
+        result = []
+        for j in range(d):
+            result.append(zoom_like(batch[i,:,:,j], (oh, ow)))
+        result = array(result).transpose(1, 2, 0)
+        batch_result.append(result)
+    result = array(batch_result)
+    return result
+
+
+def train_batch(model, image, target, lr=1e-3):
+    cuinput = torch.FloatTensor(image.transpose(0, 3, 1, 2)).cuda()
+    optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=0.0)
+    optimizer.zero_grad()
+    cuoutput = model(Variable(cuinput))
+    b, d, h, w = cuoutput.size()
+    target = zoom_like_batch(target, (h, w))
+    cutarget = Variable(torch.FloatTensor(target.transpose(0, 3, 1, 2)).cuda())
+    loss = criterion(pixels_to_batch(cuoutput), pixels_to_batch(cutarget))
+    loss.backward()
+    optimizer.step()
+    return loss.data.cpu().numpy()[0], helpers.asnd(cuoutput).transpose(0, 2, 3, 1)
+
+def display_batch(image, target, output):
+    clf()
+    if image is not None:
+        subplot(121); imshow(image[0,:,:,0], vmin=0, vmax=1)
+    if output is not None:
+        subplot(122); imshow(output[0,:,:,0], vmin=0, vmax=1)
+    draw()
+    ginput(1, 1e-3)
+
+losses = []
+rates = LearningRateSchedule(args.lr)
+nbatches = 0
+for sample in source:
+    fname = sample["__key__"]
+    image = sample["input"]
+    target = sample["output"]
+    lr = rates(ntrain)
+    try:
+        loss, output = train_batch(model, image, target, lr)
+    except Exception, e:
+        utils.print_sample(sample)
+        print e
+        continue
+    losses.append(loss)
+    print nbatches, ntrain, sample["__key__"], loss, fname, np.amin(output), np.amax(output), "lr", lr
+    if nbatches>0 and nbatches%args.save_every==0:
+        err = float(np.mean(losses[-args.save_every:]))
+        fname = paths.make_save_path(args.output, ntrain, err)
+        torch.save(model, fname)
+        print "saved", fname
+    if nbatches % 10 == 0:
+        display_batch(image, target, output)
+    waitforbuttonpress(0.0001)
+    nbatches += 1
+    ntrain += len(image)
