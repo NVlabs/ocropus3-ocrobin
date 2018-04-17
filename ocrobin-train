@@ -30,12 +30,15 @@ parser.add_argument("-l", "--lr", default="0.1", help="learning rate or learning
 parser.add_argument("-b", "--batchsize", type=int, default=1)
 parser.add_argument("-o", "--output", default="temp", help="prefix for output")
 parser.add_argument("-m", "--model", default=None, help="load model")
+parser.add_argument("-d", "--input", default="uw3-binsim-@008.tgz")
 
 parser.add_argument("--save_every", default=1000, type=int, help="how often to save")
 parser.add_argument("--loss_horizon", default=1000, type=int, help="horizon over which to calculate the loss")
 parser.add_argument("--ntrain", type=int, default=-1, help="ntrain starting value")
 parser.add_argument("--random_invert", type=float, default=0.0)
 parser.add_argument("--min_range", type=float, default=0.4)
+parser.add_argument("--maxtrain", type=int, default=10000000000)
+parser.add_argument("--shrink", type=int, default=0)
 
 parser.add_argument("-D", "--makesource", default=None)
 parser.add_argument("-P", "--makepipeline", default=None)
@@ -47,7 +50,7 @@ ARGS = {k: v for k, v in args.__dict__.items()}
 
 
 def make_source():
-    return  gopen.open_source("/home/tmb/lpr-ocr/binsim/uw3-binsim-@008.tgz")
+    return  gopen.open_source(args.input)
 
 
 def make_pipeline():
@@ -59,6 +62,10 @@ def make_pipeline():
         assert amax(gray) <= 1.0
         binary = sample["bin.png"]
         assert binary.ndim==2
+        if args.shrink > 0:
+            s = args.shrink
+            gray = gray[s:-s, s:-s]
+            binary = binary[s:-s, s:-s]
         if args.min_range < 1.0:
             gray -= amin(gray)
             gray /= amax(gray)
@@ -215,3 +222,4 @@ for sample in source:
     waitforbuttonpress(0.0001)
     nbatches += 1
     ntrain += len(image)
+    if ntrain >= args.maxtrain: break
