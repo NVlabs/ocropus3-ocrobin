@@ -1,4 +1,12 @@
 
+# ocrobin
+
+Automatic binarization using deep learning.
+
+This implements a grayscale-to-binary pixel-for-pixel transformation. The models it is usually used with perform some denoising and deblurring, but they are small enough not to contain any significant shape priors. The use of 2D LSTMs in the binarization model allows for some modeling of global noise and intensity properties.
+
+# Inference
+
 
 ```python
 %pylab inline
@@ -7,14 +15,6 @@ rc("image", cmap="gray", interpolation="bicubic")
 
     Populating the interactive namespace from numpy and matplotlib
 
-
-# ocrobin
-
-Automatic binarization using deep learning.
-
-This implements a grayscale-to-binary pixel-for-pixel transformation. The models it is usually used with perform some denoising and deblurring, but they are small enough not to contain any significant shape priors. The use of 2D LSTMs in the binarization model allows for some modeling of global noise and intensity properties.
-
-# Inference
 
 
 ```python
@@ -56,7 +56,7 @@ subplot(122); imshow(binary)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f56569d1950>
+    <matplotlib.image.AxesImage at 0x7fdca6651790>
 
 
 
@@ -73,7 +73,7 @@ subplot(122); imshow(1-binary[400:600, 400:600])
 
 
 
-    <matplotlib.image.AxesImage at 0x7f2e352bbfd0>
+    <matplotlib.image.AxesImage at 0x7fdca6576910>
 
 
 
@@ -91,7 +91,7 @@ Training data for `ocrobin-train` is stored in tarfiles, with binary images and 
 tar -ztvf testdata/bindata.tgz | sed 5q
 ```
 
-    drwxrwxr-x tmb/tmb           0 2018-04-17 10:08 ./
+    drwxrwxr-x tmb/tmb           0 2018-04-17 10:27 ./
     -rw-rw-r-- tmb/tmb      391766 2018-04-10 09:35 ./A001BIN.bin.png
     -rw-rw-r-- tmb/tmb     6021129 2018-04-10 09:35 ./A001BIN.gray.png
     -rw-rw-r-- tmb/tmb      226629 2018-04-10 09:36 ./A002BIN.bin.png
@@ -115,12 +115,8 @@ subplot(122); imshow(sample["bin.png"])
 
 
 
-    <matplotlib.image.AxesImage at 0x7f2e34b50710>
+    <matplotlib.image.AxesImage at 0x7fdc386ec390>
 
-
-
-
-![png](README_files/README_10_1.png)
 
 
 You can use the `ocrobin-train` binary to carry out the training.
@@ -130,6 +126,3 @@ You can use the `ocrobin-train` binary to carry out the training.
 %%bash
 ./ocrobin-train -d testdata/bindata.tgz -o temp
 ```
-
-    Process is interrupted.
-
