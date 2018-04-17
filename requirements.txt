@@ -1,0 +1,2 @@
+-e git://github.com/NVlabs/dlinputs.git#egg=dlinputs
+-e git://github.com/NVlabs/dltrainers.git#egg=dltrainers
