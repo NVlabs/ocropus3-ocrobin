@@ -1,0 +1,94 @@
+#!/usr/bin/python
+import os
+import re
+import glob
+import random as pyr
+import os.path
+import argparse
+
+import torch
+import scipy.ndimage as ndi
+import torch.nn.functional as F
+from pylab import *
+from torch import nn, optim, autograd
+from dlinputs import utils
+from dlinputs import gopen
+from dlinputs import filters
+from dlinputs import paths
+from dltrainers import helpers
+from dltrainers import layers
+from torch.autograd import Variable
+import matplotlib as mpl
+
+from ocroseg import degrade
+
+rc("image", cmap="gray")
+ion()
+
+parser = argparse.ArgumentParser("train a page segmenter")
+parser.add_argument("-m", "--model", default=None, help="load model")
+parser.add_argument("-b", "--batchsize", type=int, default=1)
+parser.add_argument("-D", "--makesource", default=None)
+parser.add_argument("-P", "--makepipeline", default=None)
+parser.add_argument("--display", type=int, default=0)
+parser.add_argument("input")
+parser.add_argument("output")
+
+args = parser.parse_args()
+ARGS = {k: v for k, v in args.__dict__.items()}
+
+def make_source():
+    return  gopen.open_source(args.input)
+
+
+def make_pipeline():
+
+    return filters.compose(
+        filters.rename(input="gray.png png gray.jpg jpeg jpg"),
+        filters.map(input=lambda x: np.expand_dims(x, 2)),
+        filters.batched(args.batchsize))
+
+if args.makesource: execfile(args.makesource)
+if args.makepipeline: execfile(args.makepipeline)
+
+def pixels_to_batch(x):
+    b, d, h, w = x.size()
+    return x.permute(0, 2, 3, 1).contiguous().view(b*h*w, d)
+
+class PixelsToBatch(nn.Module):
+    def forward(self, x):
+        return pixels_to_batch(x)
+
+source = make_source()
+pipeline = make_pipeline()
+source = pipeline(source)
+
+model = torch.load(args.model)
+model.cuda()
+model.eval()
+
+def predict_batch(model, image):
+    cuinput = torch.FloatTensor(image.transpose(0, 3, 1, 2)).cuda()
+    cuoutput = model(Variable(cuinput, requires_grad=False))
+    b, d, h, w = cuoutput.size()
+    return helpers.asnd(cuoutput).transpose(0, 2, 3, 1)
+
+def display_batch(image, output):
+    clf()
+    if image is not None:
+        subplot(121); imshow(image[0,:,:,0], vmin=0, vmax=1)
+    if output is not None:
+        subplot(122); imshow(output[0,:,:,0], vmin=0, vmax=1)
+    draw()
+    ginput(1, 1e-3)
+
+for i, sample in enumerate(source):
+    fname = sample["__key__"]
+    print i, fname
+    image = sample["input"]
+    output = predict_batch(model, image)
+    #if nbatches % 10 == 0:
+    if args.display > 0:
+        if i % args.display == 0:
+            display_batch(image, output)
+        waitforbuttonpress(0.0001)
