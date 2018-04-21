@@ -11,14 +11,11 @@ import scipy.ndimage as ndi
 import torch.nn.functional as F
 from pylab import *
 from torch import nn, optim, autograd
-from dlinputs import utils
-from dlinputs import gopen
-from dlinputs import filters
-from dlinputs import paths
-from dltrainers import helpers
-from dltrainers import layers
-from torch.autograd import Variable
 import matplotlib as mpl
+import ocrobin
+from dlinputs import filters
+from dlinputs import gopen
+from dlinputs import utils
 
 from ocroseg import degrade
 
@@ -30,9 +27,10 @@ parser.add_argument("-m", "--model", default=None, help="load model")
 parser.add_argument("-b", "--batchsize", type=int, default=1)
 parser.add_argument("-D", "--makesource", default=None)
 parser.add_argument("-P", "--makepipeline", default=None)
+parser.add_argument("-i", "--invert", action="store_true")
 parser.add_argument("--display", type=int, default=0)
 parser.add_argument("input")
-parser.add_argument("output")
+parser.add_argument("output", nargs="?")
 
 args = parser.parse_args()
 ARGS = {k: v for k, v in args.__dict__.items()}
@@ -43,10 +41,20 @@ def make_source():
 
 def make_pipeline():
 
+    def fixdepth(image):
+        assert image.ndim in [2, 3]
+        if image.ndim==3:
+            image = np.mean(image, 2)
+        image -= amin(image)
+        image /= amax(image)
+        if args.invert:
+            image = 1-image
+        return image
+
     return filters.compose(
         filters.rename(input="gray.png png gray.jpg jpeg jpg"),
-        filters.map(input=lambda x: np.expand_dims(x, 2)),
-        filters.batched(args.batchsize))
+        filters.map(input=fixdepth),
+        filters.batched(args.batchsize, expand=True))
 
 if args.makesource: execfile(args.makesource)
 if args.makepipeline: execfile(args.makepipeline)
@@ -62,16 +70,11 @@ class PixelsToBatch(nn.Module):
 source = make_source()
 pipeline = make_pipeline()
 source = pipeline(source)
+if args.output:
+    sink = gopen.open_sink(args.output)
 
-model = torch.load(args.model)
-model.cuda()
-model.eval()
-
-def predict_batch(model, image):
-    cuinput = torch.FloatTensor(image.transpose(0, 3, 1, 2)).cuda()
-    cuoutput = model(Variable(cuinput, requires_grad=False))
-    b, d, h, w = cuoutput.size()
-    return helpers.asnd(cuoutput).transpose(0, 2, 3, 1)
+bm = ocrobin.Binarizer(args.model)
+print bm.model
 
 def display_batch(image, output):
     clf()
@@ -86,9 +89,22 @@ for i, sample in enumerate(source):
     fname = sample["__key__"]
     print i, fname
     image = sample["input"]
-    output = predict_batch(model, image)
+    output = bm.binarize_batch(image)
     #if nbatches % 10 == 0:
     if args.display > 0:
         if i % args.display == 0:
-            display_batch(image, output)
+            clf()
+            subplot(121); imshow(image[0], vmin=0, vmax=1)
+            subplot(122); imshow(output[0], vmin=0, vmax=1)
+            draw(); ginput(1, 1e-3)
         waitforbuttonpress(0.0001)
+    for i in xrange(len(sample["__key__"])):
+        result = utils.metadict(sample, {
+            "__key__": fname[i],
+            "bin.png": output[i]
+        })
+        if args.output:
+            sink.write(result)
+
+if args.output:
+    sink.close()

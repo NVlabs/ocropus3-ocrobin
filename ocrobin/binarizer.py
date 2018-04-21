@@ -13,3 +13,12 @@ class Binarizer(object):
         bimage = self.model.forward(Variable(timage, requires_grad=False))
         result = array(bimage.data.cpu(), 'f')[0, 0]
         return result
+    def binarize_batch(self, batch):
+        if batch.ndim==4 and batch.shape[2]==3:
+            batch = mean(batch, 3)
+        assert batch.ndim==3, batch.shape
+        timage = torch.FloatTensor(batch).cuda()[:,None,:,:]
+        bimage = self.model.forward(Variable(timage, requires_grad=False))
+        assert bimage.size(1) == 1
+        result = array(bimage.data.cpu(), 'f')[:, 0, :, :]
+        return result
