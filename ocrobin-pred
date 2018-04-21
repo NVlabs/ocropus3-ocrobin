@@ -16,14 +16,16 @@ import ocrobin
 from dlinputs import filters
 from dlinputs import gopen
 from dlinputs import utils
+from dlinputs import paths
 
-from ocroseg import degrade
+model_path = os.environ.get("MODELS", ".:/usr/local/share/ocrobin:/usr/share/ocrobin")
+default_model = "bin-000000046-005393.pt"
 
 rc("image", cmap="gray")
 ion()
 
 parser = argparse.ArgumentParser("train a page segmenter")
-parser.add_argument("-m", "--model", default=None, help="load model")
+parser.add_argument("-m", "--model", default=default_model, help="load model")
 parser.add_argument("-b", "--batchsize", type=int, default=1)
 parser.add_argument("-D", "--makesource", default=None)
 parser.add_argument("-P", "--makepipeline", default=None)
@@ -36,7 +38,7 @@ args = parser.parse_args()
 ARGS = {k: v for k, v in args.__dict__.items()}
 
 def make_source():
-    return  gopen.open_source(args.input)
+    return  gopen.sharditerator_once(args.input)
 
 
 def make_pipeline():
@@ -73,7 +75,11 @@ source = pipeline(source)
 if args.output:
     sink = gopen.open_sink(args.output)
 
-bm = ocrobin.Binarizer(args.model)
+mname = paths.find_file(model_path, args.model)
+assert mname is not None, "model not found"
+print "loading", mname
+
+bm = ocrobin.Binarizer(mname)
 print bm.model
 
 def display_batch(image, output):
